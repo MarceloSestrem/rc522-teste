@@ -1,291 +1,462 @@
-// main.ts
-// pxt-rc522-robotbit
-// Basic RC522 driver for MakeCode / micro:bit
-// Author: ChatGPT (adapted for robot:bit)
-// License: MIT
+/**
+  * MFRC522 Block
+  */
+//% color="#275C6B" weight=100 icon="\uf2bb" block="Leitor MFRC522"
+namespace MFRC522_SED {
+    let Type2 = 0
+    const BlockAdr: number[] = [8, 9, 10]
+    let TPrescalerReg = 0x2B
+    let TxControlReg = 0x14
+    let PICC_READ = 0x30
+    let PICC_ANTICOLL = 0x93
+    let PCD_RESETPHASE = 0x0F
+    let temp = 0
+    let val = 0
+    let uid: number[] = []
 
-//% weight=10 color=#AA278D icon="\uf1b3"
-namespace RC522 {
-    // RC522 registers (subset)
-    const CommandReg = 0x01;
-    const CommIEnReg = 0x02;
-    const DivIEnReg = 0x03;
-    const CommIrqReg = 0x04;
-    const DivIrqReg = 0x05;
-    const ErrorReg = 0x06;
-    const Status1Reg = 0x07;
-    const Status2Reg = 0x08;
-    const FIFODataReg = 0x09;
-    const FIFOLevelReg = 0x0A;
-    const ControlReg = 0x0C;
-    const BitFramingReg = 0x0D;
-    const ModeReg = 0x11;
-    const TxControlReg = 0x14;
-    const TModeReg = 0x2A;
-    const TPrescalerReg = 0x2B;
-    const TReloadRegL = 0x2D;
-    const TReloadRegH = 0x2C;
-    const TxAutoReg = 0x15;
-    const RFCfgReg = 0x26;
+    let returnLen = 0
+    let returnData: number[] = []
+    let status = 0
+    let u = 0
+    let ChkSerNum = 0
+    let returnBits: any = null
+    let recvData: number[] = []
+    let PCD_IDLE = 0
+    let d = 0
 
-    const PCD_IDLE = 0x00;
-    const PCD_AUTHENT = 0x0E;
-    const PCD_RECEIVE = 0x08;
-    const PCD_TRANSMIT = 0x04;
-    const PCD_TRANSCEIVE = 0x0C;
-    const PCD_RESETPHASE = 0x0F;
-    const PCD_CALCCRC = 0x03;
+    let Status2Reg = 0x08
+    let CommandReg = 0x01
+    let BitFramingReg = 0x0D
+    let MAX_LEN = 16
+    let PCD_AUTHENT = 0x0E
+    let PCD_TRANSCEIVE = 0x0C
+    let PICC_REQIDL = 0x26
+    let PICC_AUTHENT1A = 0x60
 
-    // PICC commands
-    const PICC_REQIDL = 0x26;
-    const PICC_REQALL = 0x52;
-    const PICC_ANTICOLL = 0x93;
-    const PICC_SELECTTAG = 0x93;
-    const PICC_AUTHENT1A = 0x60;
-    const PICC_AUTHENT1B = 0x61;
-    const PICC_READ = 0x30;
-    const PICC_WRITE = 0xA0;
-    const PICC_HALT = 0x50;
+    let ComIrqReg = 0x04
+    let DivIrqReg = 0x05
+    let FIFODataReg = 0x09
+    let FIFOLevelReg = 0x0A
+    let ControlReg = 0x0C
+    let Key = [255, 255, 255, 255, 255, 255]
 
-    let _sdaPin = DigitalPin.P8;
-    let _rstPin = DigitalPin.P12;
-    let _sckPin = DigitalPin.P13; // SPI default SCK
-    let _mosiPin = DigitalPin.P15; // SPI default MOSI
-    let _misoPin = DigitalPin.P14; // SPI default MISO
-    let _initialized = false;
-
-    function spiSetup() {
-        pins.spiPins(_misoPin, _mosiPin, _sckPin);
-        pins.spiFrequency(1000000); // 1 MHz
+    function SetBits(reg: number, mask: number) {
+        let tmp = SPI_Read(reg)
+        SPI_Write(reg, (tmp | mask))
     }
 
-    function writeRegister(addr: number, val: number) {
-        // Address format: address << 1 & ~1  (write)
-        let address = ((addr << 1) & 0x7E);
-        pins.digitalWritePin(_sdaPin, 0); // CS low
-        pins.spiWrite(address);
-        pins.spiWrite(val);
-        pins.digitalWritePin(_sdaPin, 1); // CS high
+    function SPI_Write(adr: number, val: number) {
+        pins.digitalWritePin(DigitalPin.P15, 0)
+        pins.spiWrite((adr << 1) & 0x7E)
+        pins.spiWrite(val)
+        pins.digitalWritePin(DigitalPin.P15, 1)
     }
 
-    function readRegister(addr: number): number {
-        let address = ((addr << 1) & 0x7E) | 0x80; // read flag
-        pins.digitalWritePin(_sdaPin, 0); // CS low
-        pins.spiWrite(address);
-        let val = pins.spiRead();
-        pins.digitalWritePin(_sdaPin, 1); // CS high
-        return val;
-    }
-
-    function setBitMask(reg: number, mask: number) {
-        const tmp = readRegister(reg);
-        writeRegister(reg, tmp | mask);
-    }
-
-    function clearBitMask(reg: number, mask: number) {
-        const tmp = readRegister(reg);
-        writeRegister(reg, tmp & (~mask));
-    }
-
-    function antennaOn() {
-        let val = readRegister(TxControlReg);
-        if ((val & 0x03) != 0x03) {
-            writeRegister(TxControlReg, val | 0x03);
+    function readFromCard(): string {
+        let [status, Type2] = Request(PICC_REQIDL)
+        if (status != 0) {
+            return null, null
         }
-    }
 
-    function reset() {
-        writeRegister(CommandReg, PCD_RESETPHASE);
-    }
+        [status, uid] = AvoidColl()
 
-    function calculateCRC(data: number[]): number[] {
-        writeRegister(CommandReg, PCD_IDLE);
-        setBitMask(DivIrqReg, 0x04); // Clear CRCIRq
-        writeRegister(FIFOLevelReg, 0x80); // Clear FIFO
-        for (let i = 0; i < data.length; i++) {
-            writeRegister(FIFODataReg, data[i]);
+        if (status != 0) {
+            return null, null
         }
-        writeRegister(CommandReg, PCD_CALCCRC);
-        // wait loop
-        for (let i = 0; i < 255; i++) {
-            const n = readRegister(DivIrqReg);
-            if (n & 0x04) {
-                // CRC ready
-                const l = readRegister(0x22); // CRCResultLow
-                const h = readRegister(0x21); // CRCResultHigh
-                return [l, h];
+
+        let id = getIDNum(uid)
+        TagSelect(uid)
+        status = Authent(PICC_AUTHENT1A, 11, Key, uid)
+        let data: NumberFormat.UInt8LE[] = []
+        let text_read = ''
+        let block: number[] = []
+        if (status == 0) {
+            for (let BlockNum of BlockAdr) {
+                block = ReadRFID(BlockNum)
+                if (block) {
+                    data = data.concat(block)
+                }
+            }
+            if (data) {
+                for (let c of data) {
+                    text_read = text_read.concat(String.fromCharCode(c))
+                }
             }
         }
-        return [0, 0];
+        Crypto1Stop()
+        return text_read
     }
 
-    function toHexString(arr: number[]): string {
-        let s = "";
-        for (let i = 0; i < arr.length; i++) {
-            const t = arr[i] & 0xFF;
-            let h = t.toString(16);
-            if (h.length == 1) h = "0" + h;
-            s += h;
-            if (i < arr.length - 1) s += ":";
+    function SPI_Read(adr: number) {
+        pins.digitalWritePin(DigitalPin.P15, 0)
+        pins.spiWrite(((adr << 1) & 0x7E) | 0x80)
+        val = pins.spiWrite(0)
+        pins.digitalWritePin(DigitalPin.P15, 1)
+        return val
+    }
+
+    function writeToCard(txt: string): number {
+        [status, Type2] = Request(PICC_REQIDL)
+
+        if (status != 0) {
+            return null, null
         }
-        return s.toUpperCase();
+        [status, uid] = AvoidColl()
+
+        if (status != 0) {
+            return null, null
+        }
+
+        let id = getIDNum(uid)
+        TagSelect(uid)
+        status = Authent(PICC_AUTHENT1A, 11, Key, uid)
+        ReadRFID(11)
+
+        if (status == 0) {
+            let data: NumberFormat.UInt8LE[] = []
+            for (let i = 0; i < txt.length; i++) {
+                data.push(txt.charCodeAt(i))
+            }
+
+            for (let j = txt.length; j < 48; j++) {
+                data.push(32)
+            }
+
+            let b = 0
+            for (let BlockNum2 of BlockAdr) {
+                WriteRFID(BlockNum2, data.slice((b * 16), ((b + 1) * 16)))
+                b++
+            }
+        }
+
+        Crypto1Stop()
+        serial.writeLine("Written to Card")
+        return id
     }
 
-    function communicateWithPICC(command: number, sendData: number[], timeoutMs = 200): { status: boolean, backData: number[], backBits: number } {
-        let backData: number[] = [];
-        let backBits = 0;
-        let irqEn = 0x00;
-        let waitIRq = 0x00;
+    function ReadRFID(blockAdr: number) {
+        recvData = []
+        recvData.push(PICC_READ)
+        recvData.push(blockAdr)
+        let pOut2 = []
+        pOut2 = CRC_Calculation(recvData)
+        recvData.push(pOut2[0])
+        recvData.push(pOut2[1])
+        let [status, returnData, returnLen] = MFRC522_ToCard(PCD_TRANSCEIVE, recvData)
 
-        if (command == PCD_TRANSCEIVE) {
-            irqEn = 0x77;
-            waitIRq = 0x30;
+        if (status != 0) {
+            serial.writeLine("Error while reading!")
+        }
+
+        if (returnData.length != 16) {
+            return null
         } else {
-            irqEn = 0x12;
-            waitIRq = 0x00;
+            return returnData
+        }
+    }
+
+    function ClearBits(reg: number, mask: number) {
+        let tmp = SPI_Read(reg)
+        SPI_Write(reg, tmp & (~mask))
+    }
+
+    function Request(reqMode: number): [number, any] {
+        let Type: number[] = []
+        SPI_Write(BitFramingReg, 0x07)
+        Type.push(reqMode)
+        let [status, returnData, returnBits] = MFRC522_ToCard(PCD_TRANSCEIVE, Type)
+
+        if ((status != 0) || (returnBits != 16)) {
+            status = 2
         }
 
-        writeRegister(CommIEnReg, irqEn | 0x80);
-        clearBitMask(CommIrqReg, 0x80);
-        setBitMask(FIFOLevelReg, 0x80); // flush FIFO
-        writeRegister(CommandReg, PCD_IDLE);
+        return [status, returnBits]
+    }
 
-        for (let i = 0; i < sendData.length; i++) {
-            writeRegister(FIFODataReg, sendData[i]);
+    function AntennaON() {
+        temp = SPI_Read(TxControlReg)
+        if (~(temp & 0x03)) {
+            SetBits(TxControlReg, 0x03)
         }
+    }
 
-        writeRegister(CommandReg, command);
-        if (command == PCD_TRANSCEIVE) {
-            setBitMask(BitFramingReg, 0x80); // StartSend=1
-        }
+    function AvoidColl(): [number, number[]] {
+        let SerNum = []
+        ChkSerNum = 0
+        SPI_Write(BitFramingReg, 0)
+        SerNum.push(PICC_ANTICOLL)
+        SerNum.push(0x20)
+        let [status, returnData, returnBits] = MFRC522_ToCard(PCD_TRANSCEIVE, SerNum)
 
-        // wait for data
-        let i = 0;
-        const start = input.runningTime();
-        while (true) {
-            const n = readRegister(CommIrqReg);
-            if (n & waitIRq) break;
-            if (n & 0x01) break; // timer interrupt - timeout
-            if (input.runningTime() - start > timeoutMs) break;
-        }
-
-        clearBitMask(BitFramingReg, 0x80);
-
-        const error = readRegister(ErrorReg);
-        if ((readRegister(CommIrqReg) & 0x01) || (error & 0x1B)) {
-            return { status: false, backData: [], backBits: 0 };
-        }
-
-        if (command == PCD_TRANSCEIVE) {
-            const fifoLevel = readRegister(FIFOLevelReg);
-            for (let j = 0; j < fifoLevel; j++) {
-                backData.push(readRegister(FIFODataReg));
+        if (status == 0) {
+            if (returnData.length == 5) {
+                for (let k = 0; k <= 3; k++) {
+                    ChkSerNum = ChkSerNum ^ returnData[k]
+                }
+                if (ChkSerNum != returnData[4]) {
+                    status = 2
+                }
+            } else {
+                status = 2
             }
-            backBits = readRegister(ControlReg) & 0x07;
+        }
+        return [status, returnData]
+    }
+
+    function Crypto1Stop() {
+        ClearBits(Status2Reg, 0x08)
+    }
+
+    function Authent(authMode: number, BlockAdr: number, Sectorkey: number[], SerNum: number[]) {
+        let buff: number[] = []
+        buff.push(authMode)
+        buff.push(BlockAdr)
+        for (let l = 0; l < (Sectorkey.length); l++) {
+            buff.push(Sectorkey[l])
+        }
+        for (let m = 0; m < 4; m++) {
+            buff.push(SerNum[m])
+        }
+        [status, returnData, returnLen] = MFRC522_ToCard(PCD_AUTHENT, buff)
+        if (status != 0) {
+            serial.writeLine("AUTH ERROR!")
+        }
+        if ((SPI_Read(Status2Reg) & 0x08) == 0) {
+            serial.writeLine("AUTH ERROR2!")
+        }
+        return status
+    }
+
+    function MFRC522_ToCard(command: number, sendData: number[]): [number, number[], number] {
+        returnData = []
+        returnLen = 0
+        status = 2
+        let irqEN = 0x00
+        let waitIRQ = 0x00
+        let lastBits = null
+        let n = 0
+
+        if (command == PCD_AUTHENT) {
+            irqEN = 0x12
+            waitIRQ = 0x10
         }
 
-        return { status: true, backData: backData, backBits: backBits };
-    }
-
-    /**
-     * Inicializa o RC522.
-     * @param sda Pin de CS / SDA (conectar ao pin SS do RC522). Ex.: DigitalPin.P8
-     * @param rst Pin de RST (reset) do RC522. Ex.: DigitalPin.P12
-     */
-    //% block="RC522 init SDA %sdaPin|RST %rstPin|usar pinos SPI padrão (MOSI/MISO/SCK)"
-    //% sdaPin.defl=DigitalPin.P8
-    //% rstPin.defl=DigitalPin.P12
-    export function init(sdaPin: DigitalPin = DigitalPin.P8, rstPin: DigitalPin = DigitalPin.P12) {
-        _sdaPin = sdaPin;
-        _rstPin = rstPin;
-        // keep SPI default pins, but you can alter global vars before calling init if needed
-        pins.digitalWritePin(_sdaPin, 1);
-        pins.digitalWritePin(_rstPin, 1);
-        spiSetup();
-        reset();
-        writeRegister(TModeReg, 0x8D);
-        writeRegister(TPrescalerReg, 0x3E);
-        writeRegister(TReloadRegL, 30);
-        writeRegister(TReloadRegH, 0);
-        writeRegister(TxAutoReg, 0x40);
-        writeRegister(ModeReg, 0x3D);
-        antennaOn();
-        _initialized = true;
-    }
-
-    /**
-     * Detecta se existe tag no campo (modo IDLE). Retorna true se encontrada.
-     */
-    //% block="RC522 detectar tag presente"
-    export function tagPresent(): boolean {
-        if (!_initialized) return false;
-        writeRegister(BitFramingReg, 0x07); // 7 bits -> transmit
-        const req = [PICC_REQIDL];
-        const res = communicateWithPICC(PCD_TRANSCEIVE, req);
-        return res.status && res.backData.length > 0;
-    }
-
-    /**
-     * Lê o UID da primeira tag encontrada (array de bytes). Retorna string hex separada por ':' se sucesso, "" se falha.
-     */
-    //% block="RC522 ler UID"
-    export function readUID(): string {
-        if (!_initialized) return "";
-        // Request to detect any PICC
-        writeRegister(BitFramingReg, 0x07);
-        const req = [PICC_REQIDL];
-        let res = communicateWithPICC(PCD_TRANSCEIVE, req);
-        // if no tag, return empty
-        if (!res.status || res.backData.length == 0) {
-            return "";
+        if (command == PCD_TRANSCEIVE) {
+            irqEN = 0x77
+            waitIRQ = 0x30
         }
 
-        // Anti-collision to get UID
-        writeRegister(BitFramingReg, 0x00); // reset framing
-        const anticoll = [PICC_ANTICOLL, 0x20];
-        res = communicateWithPICC(PCD_TRANSCEIVE, anticoll);
-        if (!res.status || res.backData.length < 5) {
-            return "";
+        SPI_Write(0x02, irqEN | 0x80)
+        ClearBits(ComIrqReg, 0x80)
+        SetBits(FIFOLevelReg, 0x80)
+        SPI_Write(CommandReg, PCD_IDLE)
+
+        for (let o = 0; o < (sendData.length); o++) {
+            SPI_Write(FIFODataReg, sendData[o])
+        }
+        SPI_Write(CommandReg, command)
+
+        if (command == PCD_TRANSCEIVE) {
+            SetBits(BitFramingReg, 0x80)
         }
 
-        // backData contains UID (4 bytes) + BCC (1 byte) typically
-        const uid: number[] = [];
-        for (let i = 0; i < 5; i++) {
-            uid.push(res.backData[i]);
+        let p = 2000
+        while (true) {
+            n = SPI_Read(ComIrqReg)
+            p--
+            if (~(p != 0 && ~(n & 0x01) && ~(n & waitIRQ))) {
+                break
+            }
         }
-        // basic BCC check
-        let bcc = 0;
-        for (let i = 0; i < 4; i++) bcc ^= uid[i];
-        if (bcc != uid[4]) {
-            // BCC mismatch; but still return first 4 bytes
+        ClearBits(BitFramingReg, 0x80)
+
+        if (p != 0) {
+            if ((SPI_Read(0x06) & 0x1B) == 0x00) {
+                status = 0
+                if (n & irqEN & 0x01) {
+                    status = 1
+                }
+                if (command == PCD_TRANSCEIVE) {
+                    n = SPI_Read(FIFOLevelReg)
+                    let lastBits = SPI_Read(ControlReg) & 0x07
+                    if (lastBits != 0) {
+                        returnLen = (n - 1) * 8 + lastBits
+                    } else {
+                        returnLen = n * 8
+                    }
+                    if (n == 0) {
+                        n = 1
+                    }
+                    if (n > MAX_LEN) {
+                        n = MAX_LEN
+                    }
+                    for (let q = 0; q < n; q++) {
+                        returnData.push(SPI_Read(FIFODataReg))
+                    }
+                }
+            } else {
+                status = 2
+            }
         }
-        const uid4 = uid.slice(0, 4);
-        return toHexString(uid4);
+        return [status, returnData, returnLen]
     }
 
-    /**
-     * Para de comunicar com tag (HALT).
+    function TagSelect(SerNum: number[]) {
+        let buff: number[] = []
+        buff.push(0x93)
+        buff.push(0x70)
+        for (let r = 0; r < 5; r++) {
+            buff.push(SerNum[r])
+        }
+        let pOut = CRC_Calculation(buff)
+        buff.push(pOut[0])
+        buff.push(pOut[1])
+        let [status, returnData, returnLen] = MFRC522_ToCard(PCD_TRANSCEIVE, buff)
+        if ((status == 0) && (returnLen == 0x18)) {
+            return returnData[0]
+        } else {
+            return 0
+        }
+    }
+
+    function CRC_Calculation(DataIn: number[]) {
+        ClearBits(DivIrqReg, 0x04)
+        SetBits(FIFOLevelReg, 0x80)
+        for (let s = 0; s < (DataIn.length); s++) {
+            SPI_Write(FIFODataReg, DataIn[s])
+        }
+        SPI_Write(CommandReg, 0x03)
+        let t = 0xFF
+
+        while (true) {
+            let v = SPI_Read(DivIrqReg)
+            t--
+            if (!(t != 0 && !(v & 0x04))) {
+                break
+            }
+        }
+
+        let DataOut: number[] = []
+        DataOut.push(SPI_Read(0x22))
+        DataOut.push(SPI_Read(0x21))
+        return DataOut
+    }
+
+    function WriteRFID(blockAdr: number, writeData: number[]) {
+        let buff: number[] = []
+        let crc: number[] = []
+
+        buff.push(0xA0)
+        buff.push(blockAdr)
+        crc = CRC_Calculation(buff)
+        buff.push(crc[0])
+        buff.push(crc[1])
+        let [status, returnData, returnLen] = MFRC522_ToCard(PCD_TRANSCEIVE, buff)
+        if ((status != 0) || (returnLen != 4) || ((returnData[0] & 0x0F) != 0x0A)) {
+            status = 2
+            serial.writeLine("ERROR")
+        }
+
+        if (status == 0) {
+            let buff2: number[] = []
+            for (let w = 0; w < 16; w++) {
+                buff2.push(writeData[w])
+            }
+            crc = CRC_Calculation(buff2)
+            buff2.push(crc[0])
+            buff2.push(crc[1])
+            let [status, returnData, returnLen] = MFRC522_ToCard(PCD_TRANSCEIVE, buff2)
+            if ((status != 0) || (returnLen != 4) || ((returnData[0] & 0x0F) != 0x0A)) {
+                serial.writeLine("Error while writing")
+            } else {
+                serial.writeLine("Data written")
+            }
+        }
+    }
+
+    function getIDNum(uid: number[]) {
+        let a = 0
+        for (let e = 0; e < 5; e++) {
+            a = a * 256 + uid[e]
+        }
+        return a
+    }
+
+    function readID() {
+        [status, Type2] = Request(PICC_REQIDL)
+        if (status != 0) {
+            return null
+        }
+        [status, uid] = AvoidColl()
+        if (status != 0) {
+            return null
+        }
+        return getIDNum(uid)
+    }
+
+    /*
+     * Blocos em português
      */
-    //% block="RC522 halt (parar tag)"
-    export function haltTag(): void {
-        if (!_initialized) return;
-        const buf = [PICC_HALT, 0x00];
-        const crc = calculateCRC(buf);
-        buf.push(crc[0]);
-        buf.push(crc[1]);
-        communicateWithPICC(PCD_TRANSCEIVE, buf);
+
+    //% block="Iniciar módulo MFRC522"
+    //% weight=100
+    export function Init() {
+        pins.spiPins(DigitalPin.P13, DigitalPin.P12, DigitalPin.P14)
+        pins.spiFormat(8, 0)
+        pins.digitalWritePin(DigitalPin.P15, 1)
+        SPI_Write(CommandReg, PCD_RESETPHASE)
+        SPI_Write(0x2A, 0x8D)
+        SPI_Write(0x2B, 0x3E)
+        SPI_Write(0x2D, 30)
+        SPI_Write(0x2E, 0)
+        SPI_Write(0x15, 0x40)
+        SPI_Write(0x11, 0x3D)
+        AntennaON()
     }
 
-    /**
-     * Ajudas / debug: lê um registro do RC522 e retorna valor.
-     */
-    //% block="RC522 ler reg %addr"
-    //% addr.min=0 addr.max=255
-    export function readReg(addr: number): number {
-        return readRegister(addr);
+    //% block="Ler ID do cartão"
+    //% weight=95
+    export function getID() {
+        let id = readID()
+        while (!(id)) {
+            id = readID()
+            if (id != undefined) {
+                return id
+            }
+        }
+        return id
     }
 
-    // Placeholder: funções para leitura/escrita de blocos podem ser adicionadas aqui.
-    // Implementar autenticação (PICC_AUTHENT1A/PICC_AUTHENT1B), leitura (PICC_READ) e escrita (PICC_WRITE)
-    // exige fluxo de autenticação com chave e gerenciamento de CRC — pode ser expandido conforme necessidade.
+    //% block="Ler dados do cartão"
+    //% weight=90
+    export function read(): string {
+        let text = readFromCard()
+        while (!text) {
+            let text = readFromCard()
+            if (text != '') {
+                return text
+            }
+        }
+        return text
+    }
+
+    //% block="Escrever dados %text"
+    //% text
+    //% weight=85
+    export function write(text: string) {
+        let id = writeToCard(text)
+        while (!id) {
+            let id = writeToCard(text)
+            if (id != undefined) {
+                return
+            }
+        }
+        return
+    }
+
+    //% block="Desligar antena"
+    //% weight=80
+    export function AntennaOff() {
+        ClearBits(TxControlReg, 0x03)
+    }
 }
