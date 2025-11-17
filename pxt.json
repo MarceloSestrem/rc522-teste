@@ -1,5 +1,5 @@
 {
-    "name": "rc522 Robot:bit",
+    "name": "RFID rc522 Robot:bit",
     "version": "0.1.0",
     "description": "",
     "dependencies": {
